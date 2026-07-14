@@ -4,12 +4,17 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, List, ListItem, Paragraph};
-use ratatui::{DefaultTerminal, Frame};
+use ratatui::{DefaultTerminal, Frame, TerminalOptions};
 use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
 
 fn main() -> Result<()> {
     color_eyre::install()?;
+
+    let mut terminal = ratatui::init_with_options(TerminalOptions {
+        viewport: ratatui::Viewport::Inline(10),
+    });
+
     ratatui::run(|terminal| App::default().run(terminal))
 }
 
@@ -68,12 +73,12 @@ impl App {
     fn render(&self, frame: &mut Frame) {
         let layout = Layout::vertical([
             Constraint::Min(1),    // messages
-            Constraint::Length(1), // key hints
             Constraint::Length(3), // input area
         ]);
-        let [messages_area, help_area, input_area] = frame.area().layout(&layout);
+        let [messages_area, input_area] = frame.area().layout(&layout);
 
-        let messages: Vec<ListItem> = self
+        // HISTORY
+        let history: Vec<ListItem> = self
             .messages
             .iter()
             .enumerate()
@@ -82,35 +87,10 @@ impl App {
                 ListItem::new(content)
             })
             .collect();
-        let messages = List::new(messages).block(Block::bordered().title("Messages"));
+        let messages = List::new(history).block(Block::bordered().title("Messages"));
         frame.render_widget(messages, messages_area);
 
-        let (msg, style) = match self.input_mode {
-            InputMode::Normal => (
-                vec![
-                    "Press ".into(),
-                    "q".bold(),
-                    " to exit, ".into(),
-                    "e".bold(),
-                    " to start editing.".bold(),
-                ],
-                Style::default().add_modifier(Modifier::RAPID_BLINK),
-            ),
-            InputMode::Editing => (
-                vec![
-                    "Press ".into(),
-                    "Esc".bold(),
-                    " to stop editing, ".into(),
-                    "Enter".bold(),
-                    " to record the message".into(),
-                ],
-                Style::default(),
-            ),
-        };
-        let text = Text::from(Line::from(msg)).patch_style(style);
-        let help_message = Paragraph::new(text);
-        frame.render_widget(help_message, help_area);
-
+        // INPUT AREA
         let width = input_area.width.max(3) - 3;
         let scroll = self.input.visual_scroll(width as usize);
         let input = Paragraph::new(self.input.value())

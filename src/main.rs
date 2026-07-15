@@ -185,6 +185,16 @@ impl App {
             if let Some(key) = event.as_key_press_event() {
                 match self.input_mode {
                     InputMode::Normal => match key.code {
+                        KeyCode::Enter => {
+                            if let Some(app_exit) = self.select(SelectionAction::Execute) {
+                                return Ok(app_exit);
+                            }
+                        }
+                        KeyCode::Tab => {
+                            if let Some(app_exit) = self.select(SelectionAction::Edit) {
+                                return Ok(app_exit);
+                            }
+                        }
                         KeyCode::Char('e') | KeyCode::Char('i') | KeyCode::Char('a') => {
                             self.input_mode = InputMode::Editing;
                         }

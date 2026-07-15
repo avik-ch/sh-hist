@@ -3,10 +3,12 @@ use crate::history::HistoryEntry;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::Line;
 use ratatui::widgets::{List, ListItem, Paragraph};
 use tui_input::Input;
 
 const INPUT_PREFIX: &str = "> ";
+const INPUT_COLOR: Color = Color::Blue;
 const MULTILINE_PREVIEW_MAX_CHARS: usize = 120;
 
 pub fn render(
@@ -20,11 +22,15 @@ pub fn render(
 ) {
     let area = frame.area();
     let input_line = Rect { height: 1, ..area };
-    frame.render_widget(INPUT_PREFIX, input_line);
+    let prefix_style = match input_mode {
+        InputMode::Normal => Style::default(),
+        InputMode::Editing => Style::default().fg(INPUT_COLOR),
+    };
+    frame.render_widget(Line::styled(INPUT_PREFIX, prefix_style), input_line);
 
     let prefix_width = INPUT_PREFIX.len() as u16;
     let input_area = Rect {
-        x: input_line.x.saturating_add(prefix_width),
+        x: input_line.x + prefix_width,
         width: input_line.width.saturating_sub(prefix_width),
         ..input_line
     };
@@ -33,7 +39,7 @@ pub fn render(
     let input_widget = Paragraph::new(input.value())
         .style(match input_mode {
             InputMode::Normal => Style::default(),
-            InputMode::Editing => Style::default().fg(Color::Blue),
+            InputMode::Editing => Style::default().fg(INPUT_COLOR),
         })
         .scroll((0, scroll as u16));
     frame.render_widget(input_widget, input_area);

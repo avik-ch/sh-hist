@@ -185,7 +185,7 @@ impl App {
             if let Some(key) = event.as_key_press_event() {
                 match self.input_mode {
                     InputMode::Normal => match key.code {
-                        KeyCode::Char('e') => {
+                        KeyCode::Char('e') | KeyCode::Char('i') | KeyCode::Char('a') => {
                             self.input_mode = InputMode::Editing;
                         }
                         KeyCode::Char('q') | KeyCode::Esc => {
@@ -193,6 +193,12 @@ impl App {
                         }
                         KeyCode::Char('j') | KeyCode::Down => self.move_selection_down(),
                         KeyCode::Char('k') | KeyCode::Up => self.move_selection_up(),
+                        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            self.move_selection_down()
+                        }
+                        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            self.move_selection_up()
+                        }
                         KeyCode::Char(digit @ '0'..='9') => {
                             self.jump_to_result(digit.to_digit(10).unwrap() as usize);
                         }
@@ -212,10 +218,14 @@ impl App {
                         KeyCode::Esc => self.input_mode = InputMode::Normal,
                         KeyCode::Down => self.move_selection_down(),
                         KeyCode::Up => self.move_selection_up(),
-                        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        KeyCode::Char('j') | KeyCode::Char('n')
+                            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                        {
                             self.move_selection_down();
                         }
-                        KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        KeyCode::Char('k') | KeyCode::Char('p')
+                            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                        {
                             self.move_selection_up();
                         }
                         _ => {

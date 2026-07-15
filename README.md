@@ -1,21 +1,8 @@
 # sh-hist
 
-A terminal UI for searching zsh history.
+A TUI for searching shell history.
 
-## Usage
-
-Run `sh-hist` directly to browse history. The interface starts in editing mode:
-
-- Type to search. `Up`/`Down` or `Ctrl-P`/`Ctrl-N` moves the selection.
-- Press `Enter` to select and execute the highlighted command through the zsh widget below.
-- Press `Tab` to select the highlighted command for editing without executing it.
-- Press `Esc` to enter normal mode; use `e`, `a`, or `i` to resume editing and `q` or `Esc` to quit.
-
-When using `--result-file <path>`, a selection is written to that path. The
-process exits with status `10` for execute or `11` for edit, enabling shell
-widgets to handle the selected command.
-
-## Build
+## Setup
 
 1. Clone this repo
 ```sh
@@ -27,9 +14,7 @@ git clone git@github.com:avik-ch/sh-hist.git
 cargo build --release
 ```
 
-The binary will be created at `target/release/sh-hist`.
-
-## Install
+3. Install
 
 ```sh
 cargo install --path path/to/repo
@@ -37,7 +22,7 @@ cargo install --path path/to/repo
 
 This installs `sh-hist` into Cargo's binary directory, which should be on your `PATH`.
 
-## Add widget to shell configuration
+4. Add widget to shell configuration
 
 Add the following to `~/.zshrc`. It binds `Ctrl-R` to history search.
 
@@ -77,6 +62,7 @@ sh-hist-widget() {
 
 zle -N sh-hist-widget
 bindkey '^R' sh-hist-widget
+#       ^^^^ change this to your preferred key
 ```
 
 Then, open a new shell or source your configuration.

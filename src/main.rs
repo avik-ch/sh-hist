@@ -7,6 +7,9 @@ use crossterm::event::{self, KeyCode, KeyEventKind, KeyModifiers};
 use history::{HistoryEntry, load_zsh_history};
 use ratatui::{DefaultTerminal, TerminalOptions, Viewport};
 use search::search_history;
+use std::env;
+use std::path::PathBuf;
+use std::time::Duration;
 use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
 
@@ -15,17 +18,56 @@ const MAX_RESULTS: usize = 10;
 const SHOW_DUPLICATE_COMMANDS: bool = false;
 const SEARCH_HISTORY_METADATA: bool = false;
 
+// shell widget flags
+const EXECUTE_SELECTED_EXIT_STATUS: i32 = 10;
+const EDIT_SELECTED_EXIT_STATUS: i32 = 11;
+
 fn main() -> Result<()> {
+    let result_file = parse_result_file()?;
     color_eyre::install()?;
     let app = App::new()?;
 
+    // Initialize terminal input before Ratatui's inline viewport queries the cursor position.
+    event::poll(Duration::ZERO)?;
     let mut terminal = ratatui::init_with_options(TerminalOptions {
         viewport: Viewport::Inline((MAX_RESULTS + 1) as u16),
     });
 
-    let result = app.run(&mut terminal);
+    let app_exit = app.run(&mut terminal)?;
     ratatui::restore();
-    result
+
+    if let (Some(path), AppExit::Selected { action, command }) = (result_file, app_exit) {
+        std::fs::write(path, command)?;
+        std::process::exit(action.exit_status());
+    }
+
+    Ok(())
+}
+
+fn parse_result_file() -> Result<Option<PathBuf>> {
+    let mut arguments = env::args_os().skip(1);
+    let Some(flag) = arguments.next() else {
+        return Ok(None);
+    };
+
+    if flag == "--help" || flag == "-h" {
+        println!("Usage: sh-hist [--result-file <path>]");
+        std::process::exit(0);
+    }
+
+    if flag != "--result-file" {
+        color_eyre::eyre::bail!("unknown argument: {}", flag.to_string_lossy());
+    }
+
+    let Some(path) = arguments.next() else {
+        color_eyre::eyre::bail!("--result-file requires a path");
+    };
+
+    if arguments.next().is_some() {
+        color_eyre::eyre::bail!("only --result-file <path> is supported");
+    }
+
+    Ok(Some(path.into()))
 }
 
 /// App holds the state of the application
@@ -48,6 +90,30 @@ pub(crate) enum InputMode {
     #[default]
     Editing,
     Normal,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum AppExit {
+    Cancelled,
+    Selected {
+        action: SelectionAction,
+        command: String,
+    },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SelectionAction {
+    Execute,
+    Edit,
+}
+
+impl SelectionAction {
+    fn exit_status(&self) -> i32 {
+        match self {
+            Self::Execute => EXECUTE_SELECTED_EXIT_STATUS,
+            Self::Edit => EDIT_SELECTED_EXIT_STATUS,
+        }
+    }
 }
 
 impl App {
@@ -89,7 +155,19 @@ impl App {
         }
     }
 
-    fn run(mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+    fn selected_command(&self) -> Option<&str> {
+        let history_index = *self.matches.get(self.match_window_start)?;
+        Some(&self.history.get(history_index)?.command)
+    }
+
+    fn select(&self, action: SelectionAction) -> Option<AppExit> {
+        Some(AppExit::Selected {
+            action,
+            command: self.selected_command()?.to_string(),
+        })
+    }
+
+    fn run(mut self, terminal: &mut DefaultTerminal) -> Result<AppExit> {
         loop {
             terminal.draw(|frame| {
                 render::render(
@@ -111,7 +189,7 @@ impl App {
                             self.input_mode = InputMode::Editing;
                         }
                         KeyCode::Char('q') | KeyCode::Esc => {
-                            return Ok(());
+                            return Ok(AppExit::Cancelled);
                         }
                         KeyCode::Char('j') | KeyCode::Down => self.move_selection_down(),
                         KeyCode::Char('k') | KeyCode::Up => self.move_selection_up(),
@@ -121,8 +199,15 @@ impl App {
                         _ => {}
                     },
                     InputMode::Editing if key.kind == KeyEventKind::Press => match key.code {
-                        KeyCode::Enter | KeyCode::Tab => {
-                            // Will handle later
+                        KeyCode::Enter => {
+                            if let Some(app_exit) = self.select(SelectionAction::Execute) {
+                                return Ok(app_exit);
+                            }
+                        }
+                        KeyCode::Tab => {
+                            if let Some(app_exit) = self.select(SelectionAction::Edit) {
+                                return Ok(app_exit);
+                            }
                         }
                         KeyCode::Esc => self.input_mode = InputMode::Normal,
                         KeyCode::Down => self.move_selection_down(),
@@ -183,6 +268,54 @@ mod tests {
         app.move_selection_down();
         app.move_selection_down();
         assert_eq!(app.match_window_start, 1);
+    }
+
+    #[test]
+    fn selected_command_uses_the_highlighted_match() {
+        let app = App {
+            input: Input::default(),
+            input_mode: InputMode::default(),
+            history: vec![
+                HistoryEntry::new("newest".to_string(), String::new(), false),
+                HistoryEntry::new("selected\ncommand".to_string(), String::new(), false),
+            ],
+            matches: vec![1, 0],
+            match_window_start: 0,
+        };
+
+        assert_eq!(app.selected_command(), Some("selected\ncommand"));
+        assert_eq!(
+            app.select(SelectionAction::Edit),
+            Some(AppExit::Selected {
+                action: SelectionAction::Edit,
+                command: "selected\ncommand".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn selection_is_unavailable_without_matches() {
+        let app = App {
+            input: Input::default(),
+            input_mode: InputMode::default(),
+            history: Vec::new(),
+            matches: Vec::new(),
+            match_window_start: 0,
+        };
+
+        assert_eq!(app.select(SelectionAction::Execute), None);
+    }
+
+    #[test]
+    fn selection_actions_use_distinct_exit_statuses() {
+        assert_eq!(
+            SelectionAction::Execute.exit_status(),
+            EXECUTE_SELECTED_EXIT_STATUS
+        );
+        assert_eq!(
+            SelectionAction::Edit.exit_status(),
+            EDIT_SELECTED_EXIT_STATUS
+        );
     }
 
     #[test]

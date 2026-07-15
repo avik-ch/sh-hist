@@ -1,23 +1,19 @@
 mod history;
+mod render;
 mod search;
 
 use color_eyre::Result;
-use crossterm::event::{self, KeyCode, KeyEventKind};
+use crossterm::event::{self, KeyCode, KeyEventKind, KeyModifiers};
 use history::{HistoryEntry, load_zsh_history};
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{List, ListItem, Paragraph};
-use ratatui::{DefaultTerminal, Frame, TerminalOptions, Viewport};
+use ratatui::{DefaultTerminal, TerminalOptions, Viewport};
 use search::search_history;
 use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
 
 // CONFIG VARIABLES
-const INPUT_PREFIX: &str = "> ";
 const MAX_RESULTS: usize = 10;
 const SHOW_DUPLICATE_COMMANDS: bool = false;
 const SEARCH_HISTORY_METADATA: bool = false;
-const MULTILINE_PREVIEW_MAX_CHARS: usize = 120;
 
 fn main() -> Result<()> {
     color_eyre::install()?;
@@ -41,12 +37,14 @@ struct App {
     input_mode: InputMode,
     /// Parsed shell history, newest command first.
     history: Vec<HistoryEntry>,
-    /// Matching history indexes, newest first and capped to MAX_RESULTS.
+    /// All matching history indexes in search-rank order.
     matches: Vec<usize>,
+    /// Offset of the highlighted command within matches.
+    match_window_start: usize,
 }
 
 #[derive(Debug, Default, PartialEq)]
-enum InputMode {
+pub(crate) enum InputMode {
     #[default]
     Editing,
     Normal,
@@ -60,18 +58,50 @@ impl App {
             input_mode: InputMode::default(),
             history,
             matches: Vec::new(),
+            match_window_start: 0,
         };
         app.update_matches();
         Ok(app)
     }
 
     fn update_matches(&mut self) {
-        self.matches = search_history(&self.history, self.input.value(), MAX_RESULTS);
+        self.matches = search_history(&self.history, self.input.value(), self.history.len());
+        self.match_window_start = 0;
+    }
+
+    fn move_selection_up(&mut self) {
+        self.match_window_start = self.match_window_start.saturating_sub(1);
+    }
+
+    fn move_selection_down(&mut self) {
+        if self.match_window_start < self.matches.len().saturating_sub(1) {
+            self.match_window_start += 1;
+        }
+    }
+
+    fn jump_to_result(&mut self, distance: usize) {
+        let Some(window_start) = self.match_window_start.checked_add(distance) else {
+            return;
+        };
+
+        if window_start < self.matches.len() {
+            self.match_window_start = window_start;
+        }
     }
 
     fn run(mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         loop {
-            terminal.draw(|frame| self.render(frame))?;
+            terminal.draw(|frame| {
+                render::render(
+                    frame,
+                    &self.input,
+                    &self.input_mode,
+                    &self.history,
+                    &self.matches,
+                    self.match_window_start,
+                    MAX_RESULTS,
+                )
+            })?;
 
             let event = event::read()?;
             if let Some(key) = event.as_key_press_event() {
@@ -83,6 +113,11 @@ impl App {
                         KeyCode::Char('q') | KeyCode::Esc => {
                             return Ok(());
                         }
+                        KeyCode::Char('j') | KeyCode::Down => self.move_selection_down(),
+                        KeyCode::Char('k') | KeyCode::Up => self.move_selection_up(),
+                        KeyCode::Char(digit @ '0'..='9') => {
+                            self.jump_to_result(digit.to_digit(10).unwrap() as usize);
+                        }
                         _ => {}
                     },
                     InputMode::Editing if key.kind == KeyEventKind::Press => match key.code {
@@ -90,6 +125,14 @@ impl App {
                             // Will handle later
                         }
                         KeyCode::Esc => self.input_mode = InputMode::Normal,
+                        KeyCode::Down => self.move_selection_down(),
+                        KeyCode::Up => self.move_selection_up(),
+                        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            self.move_selection_down();
+                        }
+                        KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            self.move_selection_up();
+                        }
                         _ => {
                             self.input.handle_event(&event);
                             self.update_matches();
@@ -100,98 +143,6 @@ impl App {
             }
         }
     }
-
-    fn render(&self, frame: &mut Frame) {
-        let area = frame.area();
-        let input_line = Rect { height: 1, ..area };
-        frame.render_widget(INPUT_PREFIX, input_line);
-
-        let prefix_width = INPUT_PREFIX.len() as u16;
-        let input_area = Rect {
-            x: input_line.x.saturating_add(prefix_width),
-            width: input_line.width.saturating_sub(prefix_width),
-            ..input_line
-        };
-        let width = input_area.width as usize;
-        let scroll = self.input.visual_scroll(width);
-        let input = Paragraph::new(self.input.value())
-            .style(match self.input_mode {
-                InputMode::Normal => Style::default(),
-                InputMode::Editing => Style::default().fg(Color::Yellow),
-            })
-            .scroll((0, scroll as u16));
-        frame.render_widget(input, input_area);
-
-        let results_area = Rect {
-            y: area.y.saturating_add(1),
-            height: area.height.saturating_sub(1),
-            ..area
-        };
-        self.render_results(results_area, frame);
-
-        if self.input_mode == InputMode::Editing {
-            let x = self.input.visual_cursor().max(scroll) - scroll;
-            frame.set_cursor_position((input_area.x + x as u16, input_area.y))
-        }
-    }
-
-    fn render_results(&self, area: Rect, frame: &mut Frame) {
-        if self.matches.is_empty() {
-            frame.render_widget(
-                Paragraph::new("No matches").style(Style::default().fg(Color::DarkGray)),
-                area,
-            );
-            return;
-        }
-
-        let items = self
-            .matches
-            .iter()
-            .enumerate()
-            .map(|(result_index, history_index)| {
-                let preview = command_preview(&self.history[*history_index].command);
-                let style = if result_index == 0 {
-                    Style::default().add_modifier(Modifier::REVERSED)
-                } else {
-                    Style::default()
-                };
-                ListItem::new(preview).style(style)
-            })
-            .collect::<Vec<_>>();
-
-        frame.render_widget(List::new(items), area);
-    }
-}
-
-fn command_preview(command: &str) -> String {
-    let is_multiline = command.contains(['\n', '\r']);
-    let compact = command.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut preview = truncate_with_ellipsis(&compact, MULTILINE_PREVIEW_MAX_CHARS);
-
-    if is_multiline && !preview.ends_with("...") {
-        preview = truncate_with_ellipsis(&format!("{preview}..."), MULTILINE_PREVIEW_MAX_CHARS);
-    }
-
-    preview
-}
-
-fn truncate_with_ellipsis(value: &str, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
-        return value.to_string();
-    }
-
-    if max_chars <= 3 {
-        return ".".repeat(max_chars);
-    }
-
-    let mut truncated = value
-        .chars()
-        .take(max_chars - 3)
-        .collect::<String>()
-        .trim_end()
-        .to_string();
-    truncated.push_str("...");
-    truncated
 }
 
 #[cfg(test)]
@@ -207,25 +158,64 @@ mod tests {
                 .map(|index| HistoryEntry::new(format!("command {index}"), String::new(), false))
                 .collect(),
             matches: Vec::new(),
+            match_window_start: 0,
         };
 
         app.update_matches();
 
-        assert_eq!(app.matches, (0..MAX_RESULTS).collect::<Vec<_>>());
+        assert_eq!(app.matches, (0..12).collect::<Vec<_>>());
+        assert_eq!(app.match_window_start, 0);
     }
 
     #[test]
-    fn multiline_preview_compacts_and_marks_omission() {
-        let preview = command_preview("for file in *; do\n  echo $file\ndone");
+    fn result_window_stays_within_match_boundaries() {
+        let mut app = App {
+            input: Input::default(),
+            input_mode: InputMode::default(),
+            history: Vec::new(),
+            matches: vec![0, 1],
+            match_window_start: 0,
+        };
 
-        assert_eq!(preview, "for file in *; do echo $file done...");
+        app.move_selection_up();
+        assert_eq!(app.match_window_start, 0);
+
+        app.move_selection_down();
+        app.move_selection_down();
+        assert_eq!(app.match_window_start, 1);
     }
 
     #[test]
-    fn long_preview_is_truncated_with_ellipsis() {
-        let preview = command_preview(&"x".repeat(MULTILINE_PREVIEW_MAX_CHARS + 1));
+    fn numeric_selection_moves_the_result_window() {
+        let mut app = App {
+            input: Input::default(),
+            input_mode: InputMode::default(),
+            history: Vec::new(),
+            matches: (0..12).collect(),
+            match_window_start: 2,
+        };
 
-        assert_eq!(preview.chars().count(), MULTILINE_PREVIEW_MAX_CHARS);
-        assert!(preview.ends_with("..."));
+        app.jump_to_result(4);
+        assert_eq!(app.match_window_start, 6);
+
+        app.jump_to_result(9);
+        assert_eq!(app.match_window_start, 6);
+    }
+
+    #[test]
+    fn updating_matches_resets_result_window_to_first_match() {
+        let mut app = App {
+            input: Input::default(),
+            input_mode: InputMode::default(),
+            history: (0..3)
+                .map(|index| HistoryEntry::new(format!("command {index}"), String::new(), false))
+                .collect(),
+            matches: vec![1, 2],
+            match_window_start: 1,
+        };
+
+        app.update_matches();
+
+        assert_eq!(app.match_window_start, 0);
     }
 }

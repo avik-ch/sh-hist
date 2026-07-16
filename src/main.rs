@@ -4,6 +4,7 @@ mod search;
 
 use color_eyre::Result;
 use crossterm::event::{self, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::terminal::disable_raw_mode;
 use history::{HistoryEntry, load_zsh_history};
 use ratatui::{DefaultTerminal, TerminalOptions, Viewport};
 use search::search_history;
@@ -33,14 +34,35 @@ fn main() -> Result<()> {
         viewport: Viewport::Inline((MAX_RESULTS + 1) as u16),
     });
 
-    let app_exit = app.run(&mut terminal)?;
-    ratatui::restore();
+    let app_exit = app.run(&mut terminal);
+    let cleanup_result = cleanup_terminal(&mut terminal);
+    drop(terminal);
+
+    cleanup_result?;
+    let app_exit = app_exit?;
 
     if let (Some(path), AppExit::Selected { action, command }) = (result_file, app_exit) {
         std::fs::write(path, command)?;
         std::process::exit(action.exit_status());
     }
 
+    Ok(())
+}
+
+fn cleanup_terminal(terminal: &mut DefaultTerminal) -> Result<()> {
+    let area = terminal.get_frame().area();
+    let origin = (area.x, area.y);
+
+    // Attempt every cleanup step even if an earlier operation fails.
+    let clear_result = terminal.clear();
+    let position_result = terminal.set_cursor_position(origin);
+    let cursor_result = terminal.show_cursor();
+    let raw_mode_result = disable_raw_mode();
+
+    clear_result?;
+    position_result?;
+    cursor_result?;
+    raw_mode_result?;
     Ok(())
 }
 

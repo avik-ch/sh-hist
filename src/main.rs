@@ -53,7 +53,6 @@ fn cleanup_terminal(terminal: &mut DefaultTerminal) -> Result<()> {
     let area = terminal.get_frame().area();
     let origin = (area.x, area.y);
 
-    // Attempt every cleanup step even if an earlier operation fails.
     let clear_result = terminal.clear();
     let position_result = terminal.set_cursor_position(origin);
     let cursor_result = terminal.show_cursor();
@@ -142,7 +141,7 @@ impl App {
     fn new() -> Result<Self> {
         let history = load_zsh_history(SHOW_DUPLICATE_COMMANDS, SEARCH_HISTORY_METADATA)?;
         let mut app = Self {
-            input: Input::default(),
+            input: Input::new(env::var("SHHIST_QUERY").unwrap_or_default()),
             input_mode: InputMode::default(),
             history,
             matches: Vec::new(),
